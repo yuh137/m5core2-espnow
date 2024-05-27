@@ -1,17 +1,19 @@
 #pragma once
 #include "global.h"
 #include "MQTTHelper.h"
+#include "setup.h"
+#include "setup_espnow.h"
 
-void initM5Display();
-void publishSensorData(float, float);
-void pubSubTask(void *);
-void mqttKeepAlive(void *);
+int32_t getWiFiChannel(const char* ssid);
+void monitorWiFi();
 void connectToWiFi();
-void pubSubLogic();
+void displayData();
 void subLogic();
-void subTask(void *);
-void setupDHT();
-void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status);
-void OnDataReceived(const uint8_t *mac, const uint8_t *incomingData, int len);
-void esp_now_addPeer();
-void sendData();
+void pubLogic();
+void relayControl();
+
+void screenTask(void*);
+void subTask(void*);
+void pubTask(void*);
+void mqttKeepAlive(void*);
+void relayTask(void*);

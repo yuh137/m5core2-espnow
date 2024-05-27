@@ -1,106 +1,73 @@
 #include "logic.h"
 MyMQTT myMQTT(MQTT_SERVER, MQTT_USERNAME, MQTT_PASSWORD);
-DHT20 DHT;
 
-uint8_t peerAddress[] = {0x34, 0x98, 0x7A, 0x6C, 0x60, 0xB0};
-// DHT20 DHT;
-
-struct struct_message
-{
-    float temperature;
-    float humidity;
-};
-
-struct_message myData;
-struct_message recvData;
-
-esp_now_peer_info_t peerInfo;
+const size_t capacity = JSON_OBJECT_SIZE(1) + JSON_ARRAY_SIZE(2) + 2 * JSON_OBJECT_SIZE(2) + 200;
+DynamicJsonDocument doc(capacity);
+DynamicJsonDocument publishedDoc(capacity);
 
 int cur_fan = 0;
 int prv_fan = 0;
 int cur_light = 0;
 int prv_light = 0;
 
-static const char *tmpPayload;
+static const char* tmpPayload;
 
-void setupDHT()
+int32_t getWiFiChannel(const char* ssid)
 {
-    DHT.begin();
-}
-
-void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status)
-{
-    Serial.printf("Temperature: %0.2f\n", myData.temperature);
-    Serial.printf("Humidity: %0.2f", myData.humidity);
-    Serial.print("\r\nLast Packet Send Status:\t");
-    Serial.println(status == ESP_NOW_SEND_SUCCESS ? "Delivery Success" : "Delivery Fail");
-    char macStr[18];
-    snprintf(macStr, sizeof(macStr), "%02x:%02x:%02x:%02x:%02x:%02x", mac_addr[0], mac_addr[1], mac_addr[2],
-             mac_addr[3], mac_addr[4], mac_addr[5]);
-    Serial.print("Last Packet Sent to: ");
-    Serial.println(macStr);
-}
-
-void OnDataReceived(const uint8_t *mac, const uint8_t *incomingData, int len)
-{
-    memcpy(&recvData, incomingData, sizeof(recvData));
-    log_i("Bytes received: %d", len);
-    log_i("Data received: Temperature: %0.2f, Humidity: %0.2f", recvData.temperature, recvData.humidity);
-}
-
-void esp_now_addPeer()
-{
-    memcpy(peerInfo.peer_addr, peerAddress, 6);
-    peerInfo.channel = 1;
-    peerInfo.encrypt = false;
-
-    if (esp_now_add_peer(&peerInfo) != ESP_OK)
+    if (int32_t n = WiFi.scanNetworks())
     {
-        Serial.println("Failed to add peer");
-        return;
+        for (uint8_t i = 0; i < n; i++)
+        {
+            if (!strcmp(ssid, WiFi.SSID(i).c_str()))
+            {
+                return WiFi.channel(i);
+            }
+        }
+    }
+    return 0;
+}
+
+void eventWiFi(WiFiEvent_t event, WiFiEventInfo_t info)
+{
+    switch (event)
+    {
+        case ARDUINO_EVENT_WIFI_STA_START:
+            log_i("M5 Supermarket station mode started");
+            break;
+        case ARDUINO_EVENT_WIFI_STA_STOP:
+            log_i("M5 Supermarket station mode stopped");
+            break;
+        case ARDUINO_EVENT_WIFI_AP_START:
+            log_i("M5 Supermarket Access Point started");
+            break;
+        case ARDUINO_EVENT_WIFI_AP_STOP:
+            log_i("M5 Supermarket Access Point stopped");
+            break;
+        case ARDUINO_EVENT_WIFI_STA_GOT_IP:
+            log_i("[WIFI] Connected");
+            log_i("Channel: %d", info.wifi_sta_connected.channel);
+            // WiFi.printDiag(Serial);  // Uncomment to verify channel number before
+            // esp_wifi_set_promiscuous(true);
+            // channel = WiFi.channel();
+            // esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
+            // esp_wifi_set_promiscuous(false);
+            // WiFi.printDiag(Serial);
+            break;
+        case ARDUINO_EVENT_WIFI_AP_STACONNECTED:
+            log_i("A client just connect to this AP %s", WiFi.softAPIP().toString().c_str());
+            break;
+        case ARDUINO_EVENT_WIFI_AP_STADISCONNECTED:
+            log_i("A client just disconnect from the AP");
+            break;
+        default:
+            break;
     }
 }
 
-void initM5Display()
+void monitorWiFi()
 {
-    M5.Lcd.fillScreen(BLACK);
-    M5.Lcd.setTextColor(WHITE);
-    M5.Lcd.setTextSize(5);
-
-    M5.Lcd.setCursor(20, 20);
-    M5.Lcd.printf("Temperature: ");
-    M5.Lcd.setCursor(180, 20);
-    M5.Lcd.printf("%.2f\n", 0.00);
-
-    M5.Lcd.setCursor(20, 40);
-    M5.Lcd.printf("Humidity: ");
-    M5.Lcd.setCursor(180, 40);
-    M5.Lcd.printf("%.2f\n", 0.00);
-
-    M5.Lcd.setCursor(20, 60);
-    M5.Lcd.printf("Fan");
-    M5.Lcd.setCursor(180, 60);
-    M5.Lcd.printf("%d", cur_fan); // Fan status
-
-    M5.Lcd.setCursor(20, 80);
-    M5.Lcd.printf("Light");
-    M5.Lcd.setCursor(180, 80);
-    M5.Lcd.printf("%d", cur_light); // Light status
-}
-
-void publishSensorData(float temp, float humid)
-{
-    M5.Lcd.fillScreen(BLACK);
-    M5.Lcd.setTextSize(2);
-
-    M5.Lcd.setCursor(20, 20);
-    M5.Lcd.printf("Temperature: ");
-    M5.Lcd.setCursor(20, 40);
-    M5.Lcd.printf("Humidity: ");
-    M5.Lcd.setCursor(180, 20);
-    M5.Lcd.printf("%.2f\n", temp);
-    M5.Lcd.setCursor(180, 40);
-    M5.Lcd.printf("%.2f\n", humid);
+    WiFi.mode(WIFI_AP_STA);
+    WiFi.onEvent(eventWiFi);
 }
 
 void connectToWiFi()
@@ -110,53 +77,60 @@ void connectToWiFi()
     {
         WiFi.disconnect();
         WiFi.begin(WIFI_SSID, WIFI_PASS);
-        log_i("[WIFI] Connecting to: %s", (const char *)WIFI_SSID);
+        log_i("[WIFI] Connecting to: %s", (const char*)WIFI_SSID);
         if (WiFi.status() == WL_CONNECTED)
+        {
+            log_i("Channel: %ld", WiFi.channel());
             break;
+        }
         vTaskDelay(2000 / portTICK_PERIOD_MS);
     }
-    log_i("[WIFI] Connected");
 }
 
-void mqttKeepAlive(void *pvParameters)
+const char* extractWord(const char* input)
 {
-    for (;;)
+    const char* start = strchr(input, '\"');
+    if (start == nullptr)
     {
-        if (WiFi.status() == WL_CONNECTED)
-        {
-            myMQTT.client.loop();
-        }
-        else
-        {
-            if (WiFi.status() != WL_CONNECTED)
-            {
-                connectToWiFi();
-            }
-            myMQTT.testReconnectToMQTT();
-        }
-        vTaskDelay(250 / portTICK_PERIOD_MS);
+        return nullptr;
     }
-    vTaskDelete(NULL);
+
+    const char* end = strchr(start + 1, '\"');
+    if (end == nullptr)
+    {
+        return nullptr;
+    }
+
+    size_t length = end - start - 1;
+    char* result = new char[length + 1];
+    strncpy(result, start + 1, length);
+    result[length] = '\0';
+    return result;
 }
 
-void pubSubLogic()
+char* createDeviceJson(const char* device_key, int current, int voltage, int power, bool status)
 {
-    int status = DHT.read();
-    float temp = DHT.getTemperature();
-    float humid = DHT.getHumidity();
+    publishedDoc["data_device"]["device_key"] = device_key;
+    publishedDoc["data_device"]["current"] = current;
+    publishedDoc["data_device"]["voltage"] = voltage;
+    publishedDoc["data_device"]["power"] = power;
+    publishedDoc["data_device"]["status"] = status;
 
-    char humid_char[10];
+    char* jsonString = new char[measureJson(publishedDoc) + 1];  // +1 for the null terminator
+    serializeJson(publishedDoc, jsonString, measureJson(publishedDoc) + 1);
+
+    return jsonString;
+}
+
+void pubLogic()
+{
     char temp_char[10];
+    char humid_char[10];
 
-    sprintf(humid_char, "%.2f", humid);
-    sprintf(temp_char, "%.2f", temp);
-
-    publishSensorData(temp, humid);
-    // myMQTT.publish(FEED_HUMID, humid_char);
-    // myMQTT.publish(FEED_TEMP, temp_char);
+    sprintf(temp_char, "%.2f", outgoingSetpoints.temperature);
+    sprintf(humid_char, "%.2f", outgoingSetpoints.humidity);
 
     StaticJsonDocument<500> doc;
-
     JsonArray data_sensor = doc.createNestedArray("data_sensor");
 
     JsonObject temperature = data_sensor.createNestedObject();
@@ -178,11 +152,106 @@ void subLogic()
     tmpPayload = myMQTT.getPayload();
     if (tmpPayload != NULL)
     {
-        log_i("Payload received: %s", tmpPayload);
+        log_i("Payload received in logic: %s", tmpPayload);
+        const char* type = extractWord(tmpPayload);
+        log_i("type: %s", type);
+
+        DeserializationError error = deserializeJson(doc, tmpPayload);
+        if (error)
+        {
+            log_i("deserializeJson() failed: %s", error.c_str());
+            return;
+        }
+
+        if (strcmp(type, "data_device") == 0)
+        {
+            JsonObject data_device = doc["data_device"];
+
+            const char* device_key = data_device["device_key"];
+            int current = data_device["current"];
+            int voltage = data_device["voltage"];
+            int power = data_device["power"];
+            int status = data_device["status"];
+
+            Serial.print(F("Devices Key: "));
+            Serial.println(device_key);
+            Serial.print(F("Current: "));
+            Serial.println(current);
+            Serial.print(F("Voltage: "));
+            Serial.println(voltage);
+            Serial.print(F("Power: "));
+            Serial.println(power);
+            Serial.print(F("Status: "));
+            Serial.println(status);
+
+            if (strcmp(device_key, "light") == 0)
+            {
+                relayAStatus = status;
+                switchChanel_3();
+                controlRelay1(relayAStatus);
+            }
+            else if (strcmp(device_key, "fan") == 0)
+            {
+                relayBStatus = status;
+                switchChanel_3();
+                controlRelay2(relayBStatus);
+            }
+        }
     }
 }
 
-void subTask(void *pvParameters)
+void displayData()
+{
+    switchChanel_4();
+    getSensorData(outgoingSetpoints.temperature, outgoingSetpoints.humidity);
+    updateSensorField(outgoingSetpoints.temperature, outgoingSetpoints.humidity);
+}
+void relayControl()
+{
+    M5.update();
+    if (M5.BtnA.wasPressed())
+    {
+        switchChanel_3();
+        relayAStatus = 1 - relayAStatus;
+        controlRelay1(relayAStatus);
+        const char* deviceJson = createDeviceJson("light", -1, -1, -1, relayAStatus);
+        myMQTT.publish(FEED_LIGHT, deviceJson);
+        log_i("Relay 1: %d", relayAStatus);
+    }
+    if (M5.BtnB.wasPressed())
+    {
+        switchChanel_3();
+        relayBStatus = 1 - relayBStatus;
+        controlRelay2(relayBStatus);
+        const char* deviceJson = createDeviceJson("fan", -1, -1, -1, relayBStatus);
+        myMQTT.publish(FEED_FAN, deviceJson);
+        log_i("Relay 2: %d", relayBStatus);
+    }
+    updateDevicesField(relayBStatus, relayAStatus);
+}
+
+void mqttKeepAlive(void* pvParameters)
+{
+    for (;;)
+    {
+        if (WiFi.status() == WL_CONNECTED)
+        {
+            myMQTT.client.loop();
+        }
+        else
+        {
+            if (WiFi.status() != WL_CONNECTED)
+            {
+                connectToWiFi();
+            }
+            myMQTT.testReconnectToMQTT();
+        }
+        vTaskDelay(250 / portTICK_PERIOD_MS);
+    }
+    vTaskDelete(NULL);
+}
+
+void subTask(void* pvParameters)
 {
     for (;;)
     {
@@ -192,34 +261,33 @@ void subTask(void *pvParameters)
     vTaskDelete(NULL);
 }
 
-void pubSubTask(void *pvParameters)
+void pubTask(void* pvParameters)
 {
     for (;;)
     {
-        pubSubLogic();
-        vTaskDelay(10000 / portTICK_PERIOD_MS);
+        pubLogic();
+        vTaskDelay(30000 / portTICK_PERIOD_MS);
     }
     vTaskDelete(NULL);
 }
 
-void sendData()
+void screenTask(void* pvParameters)
 {
-    int status = DHT.read();
-    float temperature = DHT.getTemperature();
-    float humidity = DHT.getHumidity();
-
-    myData.temperature = temperature;
-    myData.humidity = humidity;
-
-    esp_err_t result = esp_now_send(peerAddress, (uint8_t *)&myData, sizeof(myData));
-
-    if (result == ESP_OK)
+    for (;;)
     {
-        Serial.println("Sent with success");
+        displayData();
+        pubLogic();
+        vTaskDelay(30000 / portTICK_PERIOD_MS);
     }
-    else
+    vTaskDelete(NULL);
+}
+
+void relayTask(void* pvParameters)
+{
+    for (;;)
     {
-        Serial.println("Error sending the data");
+        relayControl();
+        vTaskDelay(250 / portTICK_PERIOD_MS);
     }
-    delay(2000);
+    vTaskDelete(NULL);
 }

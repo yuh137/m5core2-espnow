@@ -100,7 +100,7 @@ void MyMQTT::callback(char* topic, byte* payload, unsigned int length)
 {
     unsigned int newLength = strlen(topic) + length + 1;
     char* result = new char[newLength];
-    Serial.printf("length: %d\n", strlen(topic));
+    // Serial.printf("length: %d\n", strlen(topic));
     Serial.print("Message arrived [");
     Serial.print(topic);
     Serial.print("] ");
